@@ -562,7 +562,13 @@ def _handle_brdg_event_parts(
         return Success(None)
     logger.debug("(REPORT) bridge event parts[0]=%s parts[1]=%s parts[2]=%s", parts[0], parts[1], parts[2])
     alias_repo.resolve_subscriber_sync(int(parts[6]))
-    alias_repo.resolve_talkgroup_sync(int(parts[8]))
+    if parts[0] == "PRIVATE VOICE":
+        # Private call destinations are subscriber ids, not talkgroups -- without
+        # this, alias_short(destination) in rts_update always misses the cache and
+        # falls back to the raw id, even when the subscriber is registered.
+        alias_repo.resolve_subscriber_sync(int(parts[8]))
+    else:
+        alias_repo.resolve_talkgroup_sync(int(parts[8]))
     if parts[0] in ("GROUP VOICE", "PRIVATE VOICE"):
         _event_ts = time.time()
         rts_update(parts, state, alias_svc, time_str)

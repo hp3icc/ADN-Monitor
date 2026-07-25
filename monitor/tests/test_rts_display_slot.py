@@ -26,7 +26,10 @@ from unittest.mock import MagicMock
 
 from adn_monitor.application.monitor_controller import MonitorState
 from adn_monitor.application.rts_update import rts_update_impl
-from adn_monitor.application.tgstats import prune_voice_ts_not_in_static
+from adn_monitor.application.tgstats import (
+    _active_tgid_from_peer_ts,
+    prune_voice_ts_not_in_static,
+)
 
 
 def _state_with_peer(
@@ -128,6 +131,130 @@ def test_start_without_trailing_field_defaults_announcement_false() -> None:
     assert peer[2]["ANNOUNCEMENT"] is False
 
 
+def _state_with_two_peers(*, source_peer: int, dest_peer: int) -> MonitorState:
+    """Two hotspots on the same MASTER -- private call from source_peer to dest_peer."""
+    state = MonitorState()
+    state.CTABLE = {
+        "MASTERS": {
+            "SYSTEM": {
+                "PEERS": {
+                    source_peer: {
+                        "TS1_STATIC": [], "TS2_STATIC": [],
+                        1: {"TS": False, "TRX": ""}, 2: {"TS": False, "TRX": ""},
+                    },
+                    dest_peer: {
+                        "TS1_STATIC": [], "TS2_STATIC": [],
+                        1: {"TS": False, "TRX": ""}, 2: {"TS": False, "TRX": ""},
+                    },
+                }
+            }
+        },
+        "PEERS": {},
+        "OPENBRIDGES": {},
+    }
+    return state
+
+
+def test_private_voice_rx_start_marks_transmitting_peer() -> None:
+    state = _state_with_two_peers(source_peer=730039110, dest_peer=730039101)
+    rts_update_impl(
+        "PRIVATE VOICE,START,RX,SYSTEM,1,730039110,7300391,2,7300392".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    peer = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730039110]
+    assert peer[2]["TS"] is True
+    assert peer[2]["TRX"] == "RX"
+
+
+def test_private_voice_start_tx_with_dest_peer_id_marks_receiving_peer() -> None:
+    """Regression: monitor never showed who a private call was delivered to -- the TX
+    event now carries the destination hotspot's own peer id (from SUB_MAP), letting it
+    be matched directly instead of by static TG list (private destinations aren't TGs)."""
+    state = _state_with_two_peers(source_peer=730039110, dest_peer=730039101)
+    rts_update_impl(
+        "PRIVATE VOICE,START,TX,SYSTEM,1,730039110,7300391,2,7300392,730039101".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    dest = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730039101]
+    assert dest[2]["TS"] is True
+    assert dest[2]["TRX"] == "TX"
+    source = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730039110]
+    assert source[2]["TS"] is False
+
+
+def test_private_voice_start_tx_without_dest_peer_id_touches_nothing() -> None:
+    """Backward compat: an old-format event (no trailing peer id) must not crash and
+    must not fall back to matching by static TG list (meaningless for a subscriber id)."""
+    state = _state_with_two_peers(source_peer=730039110, dest_peer=730039101)
+    rts_update_impl(
+        "PRIVATE VOICE,START,TX,SYSTEM,1,730039110,7300391,2,7300392".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    for peer in state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"].values():
+        assert peer[2]["TS"] is False
+
+
+def test_private_voice_end_tx_with_dest_peer_id_clears_receiving_peer() -> None:
+    state = _state_with_two_peers(source_peer=730039110, dest_peer=730039101)
+    rts_update_impl(
+        "PRIVATE VOICE,START,TX,SYSTEM,1,730039110,7300391,2,7300392,730039101".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    dest = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730039101]
+    assert dest[2]["TS"] is True
+    rts_update_impl(
+        "PRIVATE VOICE,END,TX,SYSTEM,1,730039110,7300391,2,7300392,1.23,730039101".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    assert dest[2]["TS"] is False
+
+
+def test_active_tgid_prefers_parenthesized_id_over_first_digit_run() -> None:
+    assert _active_tgid_from_peer_ts({"TS": True, "TG": "CE5RPY, Rodrigo (7300391)"}) == 7300391
+
+
+def test_active_tgid_falls_back_to_first_digit_run_without_parens() -> None:
+    """Group-call format ("TG 7300391    Name") has no parens -- unaffected."""
+    assert _active_tgid_from_peer_ts({"TS": True, "TG": "TG&nbsp;7300391&nbsp;&nbsp;&nbsp;&nbsp;Some TG"}) == 7300391
+
+
+def test_private_voice_end_clears_when_dest_callsign_contains_a_digit() -> None:
+    """Regression: a real ham callsign like "CE5RPY" contains a digit of its own.
+    _active_tgid_from_peer_ts must extract the id from "(...)", not just the first
+    digit run in the field -- otherwise a resolved callsign's embedded digit would
+    be matched instead of the real id, and the chip would never clear."""
+    alias = MagicMock()
+    alias.alias_short.side_effect = lambda dmr_id: "CE5RPY, Rodrigo" if dmr_id == 7300391 else str(dmr_id)
+    alias.alias_call.return_value = "CE5RPY"
+    state = _state_with_two_peers(source_peer=730039101, dest_peer=730039110)
+    rts_update_impl(
+        "PRIVATE VOICE,START,TX,SYSTEM,1,730039101,7300392,2,7300391,730039110".split(","),
+        state,
+        alias,
+        lambda: "12:00",
+    )
+    dest = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730039110]
+    assert dest[2]["TS"] is True
+    assert dest[2]["TG"] == "CE5RPY, Rodrigo (7300391)"
+    rts_update_impl(
+        "PRIVATE VOICE,END,TX,SYSTEM,1,730039101,7300392,2,7300391,1.23,730039110".split(","),
+        state,
+        alias,
+        lambda: "12:00",
+    )
+    assert dest[2]["TS"] is False
+
+
 def test_end_clears_cross_slot_when_static_tg_removed() -> None:
     """END must clear the slot lit at START even if OPTIONS no longer map the TG there."""
     state = _state_with_peer(peer_id=730001, ts1_static=["52090"], ts2_static=[])
@@ -176,6 +303,38 @@ def test_prune_preserves_echo_9990_live_trx_chip() -> None:
     prune_voice_ts_not_in_static(state, "SYSTEM", 730039101, peer)
     assert peer[2]["TS"] is True
     assert peer[2]["TRX"] == "RX"
+
+
+def test_prune_preserves_private_voice_chip_with_no_static_tg_match() -> None:
+    """Regression: build_tgstats fires after every voice event, including PRIVATE VOICE
+    START -- a private call's destination is a subscriber id and will never be in any
+    peer's static TG list, so the un-exempted prune wiped the chip almost immediately."""
+    state = _state_with_peer(peer_id=730039110, ts1_static=[], ts2_static=["7304"])
+    peer = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730039110]
+    peer[2]["TS"] = True
+    peer[2]["TYPE"] = "PRIVATE VOICE"
+    peer[2]["TRX"] = "RX"
+    peer[2]["TG"] = "TG&nbsp;7300392"
+    peer[2]["DEST"] = "TG 7300392"
+    prune_voice_ts_not_in_static(state, "SYSTEM", 730039110, peer)
+    assert peer[2]["TS"] is True
+    assert peer[2]["TRX"] == "RX"
+
+
+def test_rts_update_then_prune_keeps_private_voice_tx_chip_visible() -> None:
+    """End-to-end: START,TX event followed by the build_tgstats prune it always
+    triggers must not erase the just-set receiving chip."""
+    state = _state_with_two_peers(source_peer=730039110, dest_peer=730039101)
+    rts_update_impl(
+        "PRIVATE VOICE,START,TX,SYSTEM,1,730039110,7300391,2,7300392,730039101".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    dest = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730039101]
+    prune_voice_ts_not_in_static(state, "SYSTEM", 730039101, dest)
+    assert dest[2]["TS"] is True
+    assert dest[2]["TRX"] == "TX"
 
 
 def test_echo_9990_rx_tx_live_chips() -> None:

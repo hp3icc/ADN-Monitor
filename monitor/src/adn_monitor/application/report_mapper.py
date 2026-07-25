@@ -357,7 +357,10 @@ def voice_event_to_csv_parts(voice: dict[str, Any]) -> list[str] | None:
         dur = voice.get("duration_s")
         if dur is not None:
             parts.append(f"{float(dur):.2f}")
-    parts.append("1" if voice.get("is_announcement") else "0")
+    if family == "PRIVATE" and direction == "TX" and voice.get("dest_peer_id") is not None:
+        parts.append(str(int(voice["dest_peer_id"])))
+    else:
+        parts.append("1" if voice.get("is_announcement") else "0")
     return parts
 
 

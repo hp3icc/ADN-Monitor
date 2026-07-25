@@ -212,7 +212,7 @@ class MoniDBAliasRepository(AliasRepository):
             with self._sync_pool.connection() as conn:
                 cur = conn.cursor()
                 cur.execute(
-                    "SELECT id, name FROM talkgroup_ids WHERE id = %s",
+                    "SELECT id, callsign FROM talkgroup_ids WHERE id = %s",
                     (tg_id,),
                 )
                 row = cur.fetchone()
