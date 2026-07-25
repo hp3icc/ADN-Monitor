@@ -4,6 +4,14 @@ All notable changes to **adn-monitor** (monitor + dashboard) are documented here
 
 <!-- version list -->
 
+## v2.5.1 (2026-07-25)
+
+### Bug Fixes
+
+- Display which hotspot is receiving a private call
+  ([`ab1af50`](https://github.com/ce5rpy/ADN-Monitor/commit/ab1af50d871e52b7b7902b3a7bf283d77ff5adf6))
+
+
 ## v2.5.0 (2026-07-23)
 
 ### Chores
