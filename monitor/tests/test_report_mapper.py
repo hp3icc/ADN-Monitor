@@ -248,6 +248,46 @@ def test_voice_event_to_csv_parts_end_with_duration():
     assert parts[-1] == "0"
 
 
+def test_voice_event_private_tx_appends_dest_peer_id_not_announcement_flag():
+    """Regression: TX-direction PRIVATE VOICE events must reconstruct the trailing
+    dest_peer_id field (the one hotspot that's actually receiving), not the generic
+    is_announcement "0"/"1" placeholder every other event uses in that position."""
+    voice = {
+        "type": "voice_event",
+        "call_family": "PRIVATE",
+        "phase": "START",
+        "direction": "TX",
+        "system": "SYSTEM-1",
+        "stream_id": 1610544978,
+        "peer_id": 730039110,
+        "src_id": 7300391,
+        "slot": 2,
+        "dst_id": 7300392,
+        "dest_peer_id": 730039101,
+        "is_announcement": False,
+    }
+    parts = voice_event_to_csv_parts(voice)
+    assert parts[-1] == "730039101"
+
+
+def test_voice_event_private_rx_still_appends_announcement_flag():
+    voice = {
+        "type": "voice_event",
+        "call_family": "PRIVATE",
+        "phase": "START",
+        "direction": "RX",
+        "system": "SYSTEM-1",
+        "stream_id": 1610544978,
+        "peer_id": 730039110,
+        "src_id": 7300391,
+        "slot": 2,
+        "dst_id": 7300392,
+        "is_announcement": False,
+    }
+    parts = voice_event_to_csv_parts(voice)
+    assert parts[-1] == "0"
+
+
 def test_voice_event_unit_data_header():
     voice = {
         "type": "voice_event",

@@ -246,13 +246,22 @@ def _session_key(master_name: str, peer_id: int, slot: int) -> tuple[str, int, i
 
 
 def _active_tgid_from_peer_ts(peer_ts: dict) -> int | None:
-    """TG number from a live CTABLE timeslot row (DEST / TG fields)."""
+    """TG/destination id from a live CTABLE timeslot row (DEST / TG fields).
+
+    A resolved display name can contain digits of its own (most ham callsigns do,
+    e.g. "CE5RPY") -- prefer the id in "(...)" (the convention every display format
+    here uses, e.g. "CE5RPY, Rodrigo (7300391)") over a bare first-digit-run match,
+    so a callsign's embedded digit is never mistaken for the real id.
+    """
     if not peer_ts.get("TS"):
         return None
     raw = peer_ts.get("TG") or peer_ts.get("DEST") or ""
     if isinstance(raw, int):
         return raw
     text = str(raw).replace("&nbsp;", " ")
+    paren = re.search(r"\((\d+)\)", text)
+    if paren:
+        return int(paren.group(1))
     match = re.search(r"\d+", text)
     return int(match.group()) if match else None
 
@@ -301,6 +310,11 @@ def prune_voice_ts_not_in_static(
             continue
         tg_str = str(tgid)
         if _is_echo_service_live_tgid(tgid):
+            continue
+        if peer_ts.get("TYPE") == "PRIVATE VOICE":
+            # Private call destinations are subscriber IDs, never a hotspot's static
+            # TG -- this check would otherwise wipe the chip on the very next
+            # build_tgstats pass (fires after every voice event, START included).
             continue
         if tg_str in allowed:
             continue

@@ -176,11 +176,20 @@ def _voice_event_target_peers(
     call_type: str,
     event_slot: int,
     destination: int,
+    dest_peer_id: int | None = None,
 ) -> list[tuple[int | bytes, dict]]:
     """Peers whose CTABLE chips this voice event should touch."""
     if action == "END":
         if trx == "RX":
             peer_id, peer_row = _resolve_master_peer(peers, source_peer)
+            if peer_row is not None and peer_id is not None:
+                return [(peer_id, peer_row)]
+            return []
+        if call_type == "PRIVATE VOICE" and dest_peer_id is not None:
+            # Private calls have no static TG list to match against (the destination
+            # is a subscriber ID, not a talkgroup) -- go straight to the exact hotspot
+            # SUB_MAP said the destination was last heard on.
+            peer_id, peer_row = _resolve_master_peer(peers, dest_peer_id)
             if peer_row is not None and peer_id is not None:
                 return [(peer_id, peer_row)]
             return []
@@ -213,6 +222,12 @@ def _voice_event_target_peers(
 
     if trx == "RX":
         peer_id, peer_row = _resolve_master_peer(peers, source_peer)
+        if peer_row is not None and peer_id is not None:
+            return [(peer_id, peer_row)]
+        return []
+
+    if call_type == "PRIVATE VOICE" and dest_peer_id is not None:
+        peer_id, peer_row = _resolve_master_peer(peers, dest_peer_id)
         if peer_row is not None and peer_id is not None:
             return [(peer_id, peer_row)]
         return []
@@ -289,12 +304,30 @@ def rts_update_impl(
     time_slot = int(p[7])
     destination = int(p[8])
     is_announcement = len(p) > 9 and p[-1] == "1"
+    dest_peer_id: int | None = None
+    if call_type == "PRIVATE VOICE" and trx == "TX":
+        _pvt_base_len = 10 if action == "END" else 9
+        if len(p) > _pvt_base_len:
+            try:
+                dest_peer_id = int(p[-1])
+            except ValueError:
+                dest_peer_id = None
     timeout = time.time()
     ctable = state.CTABLE
     sub_short = alias_svc.alias_short(source_sub)
     sub_call = alias_svc.alias_call(source_sub)
-    tg_dest = f"TG {destination}&nbsp;&nbsp;&nbsp;&nbsp;{alias_svc.alias_tgid(destination)}"
-    tg_short = f"TG&nbsp;{destination}"
+    if call_type == "PRIVATE VOICE":
+        # The destination is a subscriber id, not a talkgroup -- resolve it the same
+        # way as the source (alias_short), not via alias_tgid. Same "name (id)" shape
+        # as the SUB field for display consistency; _active_tgid_from_peer_ts prefers
+        # the id inside "(...)" specifically so a callsign's own embedded digit (most
+        # ham callsigns have one, e.g. "CE5RPY") is never mistaken for the real id.
+        dest_short = alias_svc.alias_short(destination)
+        tg_dest = f"{dest_short} ({destination})" if dest_short and dest_short != str(destination) else str(destination)
+        tg_short = tg_dest
+    else:
+        tg_dest = f"TG {destination}&nbsp;&nbsp;&nbsp;&nbsp;{alias_svc.alias_tgid(destination)}"
+        tg_short = f"TG&nbsp;{destination}"
 
     # INGRESS: register UA/SINGLE owner early; skip live TRX chips / Active QSO row.
     if call_type == "GROUP VOICE" and action == "INGRESS":
@@ -340,6 +373,7 @@ def rts_update_impl(
             call_type=call_type,
             event_slot=time_slot,
             destination=destination,
+            dest_peer_id=dest_peer_id,
         ):
             display_slot = _peer_display_slot(
                 peer_row,
