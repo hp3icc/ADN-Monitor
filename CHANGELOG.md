@@ -4,6 +4,14 @@ All notable changes to **adn-monitor** (monitor + dashboard) are documented here
 
 <!-- version list -->
 
+## v2.5.2 (2026-07-28)
+
+### Bug Fixes
+
+- Light up both CTABLE chips when a peer has the TG on TS1+TS2
+  ([`6bb9b5a`](https://github.com/ce5rpy/ADN-Monitor/commit/6bb9b5ac845722bdf87f8489ea4c7b275b133df1))
+
+
 ## v2.5.1 (2026-07-25)
 
 ### Bug Fixes
