@@ -30,7 +30,7 @@ import time
 from ..domain.peer_rf import (
     SIMPLEX_VOICE_SLOT,
     normalize_ua_voice_slot,
-    peer_downlink_display_slot,
+    peer_downlink_display_slots,
 )
 from ..domain.value_objects import ServerMode
 from .alias_service import AliasService
@@ -116,9 +116,9 @@ def _apply_voice_single_ts(
     _apply_multi_mode_chips(state, system, peer_id, peer_row)
 
 
-def _static_tg_slot_for_peer(peer_row: dict, destination: int, event_slot: int) -> int:
-    """Map wire timeslot to the peer chip that lists this TG in OPTIONS (TS1/TS2)."""
-    return peer_downlink_display_slot(peer_row, destination, event_slot)
+def _static_tg_slots_for_peer(peer_row: dict, destination: int, event_slot: int) -> list[int]:
+    """Chip slot(s) to update -- both, when this peer has the TG on TS1+TS2."""
+    return peer_downlink_display_slots(peer_row, destination, event_slot)
 
 
 def _is_master_peer_row(system: str) -> bool:
@@ -260,7 +260,7 @@ def _voice_event_target_peers(
     return targets
 
 
-def _peer_display_slot(
+def _peer_display_slots(
     peer_row: dict,
     peer_key,
     *,
@@ -269,20 +269,21 @@ def _peer_display_slot(
     event_slot: int,
     destination: int,
     trx: str = "",
-) -> int:
-    """Timeslot index for CTABLE peer chips (1 or 2)."""
+) -> list[int]:
+    """Timeslot index(es) for CTABLE peer chips -- usually one, both when this
+    peer has the TG on both static OPTIONS slots (see peer_downlink_display_slots)."""
     if _peer_keys_equal(source_peer, peer_key):
-        return event_slot
+        return [event_slot]
     if (
         call_type == "GROUP VOICE"
         and trx == "TX"
         and _is_echo_service_live_tgid(destination)
     ):
         # Echo/service downlink (bridge TX leg): use wire slot, not OPTIONS static map.
-        return event_slot
+        return [event_slot]
     if call_type == "GROUP VOICE":
-        return _static_tg_slot_for_peer(peer_row, destination, event_slot)
-    return event_slot
+        return _static_tg_slots_for_peer(peer_row, destination, event_slot)
+    return [event_slot]
 
 
 def rts_update_impl(
@@ -375,7 +376,7 @@ def rts_update_impl(
             destination=destination,
             dest_peer_id=dest_peer_id,
         ):
-            display_slot = _peer_display_slot(
+            display_slots = _peer_display_slots(
                 peer_row,
                 peer,
                 call_type=call_type,
@@ -385,41 +386,42 @@ def rts_update_impl(
                 trx=trx,
             )
             crxstatus = "RX" if _peer_keys_equal(source_peer, peer) else "TX"
-            peer_ts = peer_row[display_slot]
-            if action == "START":
-                if (
-                    peer_ts.get("TS")
-                    and not _is_echo_service_live_tgid(destination)
-                    and _peer_slot_busy_other_tg(peer_ts, destination)
-                ):
-                    continue
-                # Local PTT (TRX=RX / red): do not replace with another peer's downlink (TRX=TX / green).
-                if (
-                    peer_ts.get("TS")
-                    and peer_ts.get("TRX") == "RX"
-                    and not _peer_keys_equal(source_peer, peer)
-                    and not _is_echo_service_live_tgid(destination)
-                ):
-                    continue
-                peer_ts["TIMEOUT"] = timeout
-                peer_ts["TS"] = True
-                peer_ts["TYPE"] = call_type
-                peer_ts["SUB"] = f"{sub_short} ({source_sub})"
-                peer_ts["CALL"] = sub_call
-                peer_ts["SRC"] = peer
-                peer_ts["DEST"] = tg_dest
-                peer_ts["TG"] = tg_short
-                peer_ts["TRX"] = crxstatus
-                peer_ts["ANNOUNCEMENT"] = is_announcement
-            elif action == "END":
-                if (
-                    trx == "TX"
-                    and peer_ts.get("TS")
-                    and not _is_echo_service_live_tgid(destination)
-                    and _peer_slot_busy_other_tg(peer_ts, destination)
-                ):
-                    continue
-                clear_voice_ts_for_destination(peer_row, destination)
+            for display_slot in display_slots:
+                peer_ts = peer_row[display_slot]
+                if action == "START":
+                    if (
+                        peer_ts.get("TS")
+                        and not _is_echo_service_live_tgid(destination)
+                        and _peer_slot_busy_other_tg(peer_ts, destination)
+                    ):
+                        continue
+                    # Local PTT (TRX=RX / red): do not replace with another peer's downlink (TRX=TX / green).
+                    if (
+                        peer_ts.get("TS")
+                        and peer_ts.get("TRX") == "RX"
+                        and not _peer_keys_equal(source_peer, peer)
+                        and not _is_echo_service_live_tgid(destination)
+                    ):
+                        continue
+                    peer_ts["TIMEOUT"] = timeout
+                    peer_ts["TS"] = True
+                    peer_ts["TYPE"] = call_type
+                    peer_ts["SUB"] = f"{sub_short} ({source_sub})"
+                    peer_ts["CALL"] = sub_call
+                    peer_ts["SRC"] = peer
+                    peer_ts["DEST"] = tg_dest
+                    peer_ts["TG"] = tg_short
+                    peer_ts["TRX"] = crxstatus
+                    peer_ts["ANNOUNCEMENT"] = is_announcement
+                elif action == "END":
+                    if (
+                        trx == "TX"
+                        and peer_ts.get("TS")
+                        and not _is_echo_service_live_tgid(destination)
+                        and _peer_slot_busy_other_tg(peer_ts, destination)
+                    ):
+                        continue
+                    clear_voice_ts_for_destination(peer_row, destination)
 
     server_mode = getattr(state, "server_mode", ServerMode.LEGACY)
     if system in ctable.get("OPENBRIDGES", {}):
