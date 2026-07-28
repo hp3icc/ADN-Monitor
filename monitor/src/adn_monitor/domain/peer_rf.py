@@ -90,10 +90,37 @@ def peer_downlink_display_slot(
     ts2 = [str(x).strip() for x in (peer_row.get("TS2_STATIC") or []) if str(x).strip()]
     in_ts1 = tg in ts1
     in_ts2 = tg in ts2
+    if in_ts1 and in_ts2:
+        # TG duplicated on both static slots: each downlink event carries its
+        # own real wire slot (server now delivers both independently), so the
+        # chip must follow event_slot -- collapsing to SIMPLEX_VOICE_SLOT here
+        # would make the TS1 delivery overwrite the same chip as TS2.
+        return event_slot
     if peer_is_simplex(peer_row) and (in_ts1 or in_ts2):
         return SIMPLEX_VOICE_SLOT
-    if in_ts1 and not in_ts2:
+    if in_ts1:
         return 1
-    if in_ts2 and not in_ts1:
+    if in_ts2:
         return 2
     return event_slot
+
+
+def peer_downlink_display_slots(
+    peer_row: dict[str, Any],
+    destination: int,
+    event_slot: int,
+) -> list[int]:
+    """CTABLE chip slot(s) to update for one downlink event to this peer.
+
+    Normally a single slot (see ``peer_downlink_display_slot``). When the TG
+    is duplicated on both static OPTIONS slots, adn-server's
+    ``iter_downlink_voice_slots`` delivers to this peer independently on
+    TS1 *and* TS2 from the one incoming event -- both chips must reflect
+    that, not just whichever slot the source happened to transmit on.
+    """
+    tg = str(destination)
+    ts1 = [str(x).strip() for x in (peer_row.get("TS1_STATIC") or []) if str(x).strip()]
+    ts2 = [str(x).strip() for x in (peer_row.get("TS2_STATIC") or []) if str(x).strip()]
+    if tg in ts1 and tg in ts2:
+        return [1, 2]
+    return [peer_downlink_display_slot(peer_row, destination, event_slot)]

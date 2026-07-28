@@ -94,6 +94,24 @@ def test_wire_ts2_colors_ts1_when_tg_only_in_ts1_static() -> None:
     assert peer[2]["TS"] is False
 
 
+def test_tg_on_both_static_slots_lights_up_both_chips() -> None:
+    """Duplex hotspot with the TG on TS1+TS2: adn-server delivers to it on
+    both slots independently (e.g. an OBP-sourced call, always reported on
+    slot 1) -- both chips must light up, not just the event's own slot."""
+    state = _state_with_peer(peer_id=730001, ts1_static=["730"], ts2_static=["730"])
+    rts_update_impl(
+        "GROUP VOICE,START,TX,SYSTEM,1,730002,730002,1,730".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    peer = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730001]
+    assert peer[1]["TS"] is True
+    assert peer[1]["TRX"] == "TX"
+    assert peer[2]["TS"] is True
+    assert peer[2]["TRX"] == "TX"
+
+
 def test_transmitter_rx_uses_wire_slot_not_options() -> None:
     state = _state_with_peer(peer_id=730002, ts1_static=[], ts2_static=["73010"])
     rts_update_impl(
