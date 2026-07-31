@@ -112,6 +112,47 @@ def test_tg_on_both_static_slots_lights_up_both_chips() -> None:
     assert peer[2]["TRX"] == "TX"
 
 
+def test_tg_static_on_one_slot_and_dynamic_on_other_lights_up_both() -> None:
+    """Duplex peer: TG static on TS1, and *also* dynamically keyed (SINGLE=0)
+    on TS2 -- both must light up, not just the statically-configured slot.
+    Distinguishing this from the plain single-static case (which must NOT
+    light the other slot, see test_wire_ts2_colors_ts1_when_tg_only_in_ts1_static)
+    requires the dynamic UA_MULTI_TS2 data, already synced onto peer_row from
+    the server's ua_multi_tgs report field."""
+    state = _state_with_peer(peer_id=730001, ts1_static=["730"], ts2_static=[])
+    state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730001]["UA_MULTI_TS2"] = [
+        {"TGID": "730", "TO": ""},
+    ]
+    rts_update_impl(
+        "GROUP VOICE,START,TX,SYSTEM,1,730002,730002,2,730".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    peer = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730001]
+    assert peer[1]["TS"] is True
+    assert peer[2]["TS"] is True
+
+
+def test_tg_dynamic_on_both_slots_no_static_lights_up_both() -> None:
+    """No static OPTIONS at all -- TG independently keyed (SINGLE=0) dynamic
+    on both slots -- must light up both, matching the real-world case where
+    the hotspot receives the call on both slots too."""
+    state = _state_with_peer(peer_id=730001, ts1_static=[], ts2_static=[])
+    peer_row = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730001]
+    peer_row["UA_MULTI_TS1"] = [{"TGID": "730", "TO": ""}]
+    peer_row["UA_MULTI_TS2"] = [{"TGID": "730", "TO": ""}]
+    rts_update_impl(
+        "GROUP VOICE,START,TX,SYSTEM,1,730002,730002,2,730".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    peer = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730001]
+    assert peer[1]["TS"] is True
+    assert peer[2]["TS"] is True
+
+
 def test_transmitter_rx_uses_wire_slot_not_options() -> None:
     state = _state_with_peer(peer_id=730002, ts1_static=[], ts2_static=["73010"])
     rts_update_impl(
@@ -686,3 +727,111 @@ def test_simplex_single_mode_ua_chip_on_ts2() -> None:
     peer = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][peer_id]
     assert peer["SINGLE_TS2"]["TGID"] == 730444
     assert peer["SINGLE_TS1"]["TGID"] == ""
+
+
+def test_transmitting_peer_echoes_to_own_other_static_slot() -> None:
+    """New behavior: TG static on TS1 only, peer transmits (RX) on slot 2 --
+    slot 1 must show TX (self-echo), slot 2 shows RX (its own PTT)."""
+    state = _state_with_peer(peer_id=730001, ts1_static=["730"], ts2_static=[])
+    rts_update_impl(
+        "GROUP VOICE,START,RX,SYSTEM,1,730001,730001,2,730".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    peer = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730001]
+    assert peer[2]["TS"] is True
+    assert peer[2]["TRX"] == "RX"
+    assert peer[1]["TS"] is True
+    assert peer[1]["TRX"] == "TX"
+
+
+def test_transmitting_peer_echoes_to_own_dynamically_subscribed_other_slot() -> None:
+    """Same self-echo, but the other slot's subscription is dynamic
+    (UA_MULTI_TGS), not static -- static vs dynamic treated identically.
+
+    Must seed state.UA_MULTI_TGS (not peer_row["UA_MULTI_TS1"] directly):
+    this event's trx="RX" triggers _apply_voice_single_ts -> _apply_multi_mode_chips,
+    which rebuilds peer_row["UA_MULTI_TS{slot}"] from state.UA_MULTI_TGS on every
+    RX event, so a directly-seeded peer_row field would just get overwritten.
+    """
+    state = _state_with_peer(peer_id=730001, ts1_static=[], ts2_static=[])
+    state.UA_MULTI_TGS = {("SYSTEM", 730001, 1): {730}}
+    rts_update_impl(
+        "GROUP VOICE,START,RX,SYSTEM,1,730001,730001,2,730".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    peer = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730001]
+    assert peer[2]["TS"] is True
+    assert peer[2]["TRX"] == "RX"
+    assert peer[1]["TS"] is True
+    assert peer[1]["TRX"] == "TX"
+
+
+def test_transmitting_peer_echoes_symmetrically_on_opposite_slot() -> None:
+    """Same behavior, transmitting on the opposite slot: TG static on TS2,
+    transmits on slot 1 -- slot 2 shows TX."""
+    state = _state_with_peer(peer_id=730001, ts1_static=[], ts2_static=["730"])
+    rts_update_impl(
+        "GROUP VOICE,START,RX,SYSTEM,1,730001,730001,1,730".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    peer = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730001]
+    assert peer[1]["TS"] is True
+    assert peer[1]["TRX"] == "RX"
+    assert peer[2]["TS"] is True
+    assert peer[2]["TRX"] == "TX"
+
+
+def test_transmitting_peer_no_self_echo_without_other_slot_subscription() -> None:
+    """No TG configured on the other slot at all -- no self-echo, matching
+    existing (unchanged) single-slot behavior."""
+    state = _state_with_peer(peer_id=730001, ts1_static=[], ts2_static=[])
+    rts_update_impl(
+        "GROUP VOICE,START,RX,SYSTEM,1,730001,730001,2,730".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    peer = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730001]
+    assert peer[2]["TS"] is True
+    assert peer[1]["TS"] is False
+
+
+def test_transmitting_peer_self_echo_clears_on_end() -> None:
+    """END clears the echoed chip on the other slot too."""
+    state = _state_with_peer(peer_id=730001, ts1_static=["730"], ts2_static=[])
+    rts_update_impl(
+        "GROUP VOICE,START,RX,SYSTEM,1,730001,730001,2,730".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    rts_update_impl(
+        "GROUP VOICE,END,RX,SYSTEM,1,730001,730001,2,730".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    peer = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730001]
+    assert peer[1]["TS"] is False
+
+
+def test_simplex_transmitting_peer_gets_no_self_echo() -> None:
+    """Simplex hardware has one real RF path -- no self-echo to "the other
+    slot", unlike a genuinely duplex peer."""
+    state = _state_with_peer(peer_id=730001, ts1_static=["730"], ts2_static=["730"])
+    state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730001]["RF_MODE"] = "simplex"
+    rts_update_impl(
+        "GROUP VOICE,START,RX,SYSTEM,1,730001,730001,2,730".split(","),
+        state,
+        _alias(),
+        lambda: "12:00",
+    )
+    peer = state.CTABLE["MASTERS"]["SYSTEM"]["PEERS"][730001]
+    assert peer[2]["TS"] is True
+    assert peer[1]["TS"] is False
