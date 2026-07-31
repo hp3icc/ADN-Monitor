@@ -31,6 +31,8 @@ from ..domain.peer_rf import (
     SIMPLEX_VOICE_SLOT,
     normalize_ua_voice_slot,
     peer_downlink_display_slots,
+    peer_dynamic_tg_active_on_slot,
+    peer_is_simplex,
 )
 from ..domain.value_objects import ServerMode
 from .alias_service import AliasService
@@ -145,11 +147,31 @@ def voice_event_skip_master_downlink_log(parts: list[str], ctable: dict) -> bool
     return system in ctable.get("MASTERS", {})
 
 
-def _peer_static_lists_include_tg(peer_row: dict, destination: int) -> bool:
+def _peer_subscribed_to_tg(peer_row: dict, destination: int) -> bool:
+    """True when this peer cares about ``destination`` at all -- static
+    OPTIONS on either slot, or dynamically active (SINGLE=0/1) on either.
+    Static vs dynamic makes no difference to whether a downlink event should
+    even consider this peer a chip-update target."""
     tg = str(destination)
     ts1 = [str(x).strip() for x in (peer_row.get("TS1_STATIC") or []) if str(x).strip()]
     ts2 = [str(x).strip() for x in (peer_row.get("TS2_STATIC") or []) if str(x).strip()]
-    return tg in ts1 or tg in ts2
+    if tg in ts1 or tg in ts2:
+        return True
+    return (
+        peer_dynamic_tg_active_on_slot(peer_row, destination, 1)
+        or peer_dynamic_tg_active_on_slot(peer_row, destination, 2)
+    )
+
+
+def _peer_subscribed_to_tg_on_slot(peer_row: dict, destination: int, slot: int) -> bool:
+    """True when this peer cares about ``destination`` on this *specific*
+    slot -- static OPTIONS for that slot, or dynamically active there."""
+    tg = str(destination)
+    key = "TS1_STATIC" if slot == 1 else "TS2_STATIC"
+    static_list = [str(x).strip() for x in (peer_row.get(key) or []) if str(x).strip()]
+    if tg in static_list:
+        return True
+    return peer_dynamic_tg_active_on_slot(peer_row, destination, slot)
 
 
 def _peer_slot_busy_other_tg(peer_ts: dict, destination: int) -> bool:
@@ -215,7 +237,7 @@ def _voice_event_target_peers(
                 _peer_row_shows_destination(peer_row, destination)
                 or (
                     not _peer_keys_equal(source_peer, peer_key)
-                    and _peer_static_lists_include_tg(peer_row, destination)
+                    and _peer_subscribed_to_tg(peer_row, destination)
                 )
             )
         ]
@@ -254,7 +276,7 @@ def _voice_event_target_peers(
             continue
         if _peer_keys_equal(source_peer, peer_key):
             continue
-        if not _peer_static_lists_include_tg(peer_row, destination):
+        if not _peer_subscribed_to_tg(peer_row, destination):
             continue
         targets.append((peer_key, peer_row))
     return targets
@@ -422,6 +444,44 @@ def rts_update_impl(
                     ):
                         continue
                     clear_voice_ts_for_destination(peer_row, destination)
+
+        # Same repeater, other slot: the transmitting peer is also
+        # subscribed (static or dynamic) to this TG on the slot it did NOT
+        # just transmit on -- show it there too as its own TX-style chip.
+        # Purely additive: a separate block from the loop above, so it can't
+        # change how any other peer (or this peer's own RX chip) is handled.
+        if (
+            call_type == "GROUP VOICE"
+            and trx == "RX"
+            and not _is_echo_service_live_tgid(destination)
+        ):
+            src_peer_id, src_peer_row = _resolve_master_peer(
+                ctable["MASTERS"][system]["PEERS"], source_peer,
+            )
+            if src_peer_row is not None and not peer_is_simplex(src_peer_row):
+                other_slot = 2 if time_slot == 1 else 1
+                if _peer_subscribed_to_tg_on_slot(src_peer_row, destination, other_slot):
+                    peer_ts = src_peer_row[other_slot]
+                    if action == "START":
+                        if peer_ts.get("TS") and (
+                            _peer_slot_busy_other_tg(peer_ts, destination)
+                            or peer_ts.get("TRX") == "RX"
+                        ):
+                            pass  # busy with another TG, or a real local PTT -- leave it alone
+                        else:
+                            peer_ts["TIMEOUT"] = timeout
+                            peer_ts["TS"] = True
+                            peer_ts["TYPE"] = call_type
+                            peer_ts["SUB"] = f"{sub_short} ({source_sub})"
+                            peer_ts["CALL"] = sub_call
+                            peer_ts["SRC"] = src_peer_id
+                            peer_ts["DEST"] = tg_dest
+                            peer_ts["TG"] = tg_short
+                            peer_ts["TRX"] = "TX"
+                            peer_ts["ANNOUNCEMENT"] = is_announcement
+                    elif action == "END":
+                        if not _peer_slot_busy_other_tg(peer_ts, destination):
+                            clear_voice_ts_for_destination(src_peer_row, destination)
 
     server_mode = getattr(state, "server_mode", ServerMode.LEGACY)
     if system in ctable.get("OPENBRIDGES", {}):

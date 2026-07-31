@@ -6,6 +6,7 @@ from adn_monitor.domain.peer_rf import (
     RF_MODE_SIMPLEX,
     normalize_ua_voice_slot,
     peer_downlink_display_slot,
+    peer_downlink_display_slots,
     peer_is_simplex,
     peer_rf_mode,
 )
@@ -42,3 +43,72 @@ def test_peer_downlink_display_slot_tg_on_both_static_slots_follows_event_slot()
     peer_simplex = {"RF_MODE": "simplex", "TS1_STATIC": ["730"], "TS2_STATIC": ["730"]}
     assert peer_downlink_display_slot(peer_simplex, 730, 1) == 1
     assert peer_downlink_display_slot(peer_simplex, 730, 2) == 2
+
+
+def test_peer_downlink_display_slots_static_on_one_dynamic_multi_on_other():
+    """SINGLE=0 dynamic keying (UA_MULTI_TS2) on the slot opposite a static
+    match: both slots must light up."""
+    peer = {
+        "RF_MODE": "duplex",
+        "TS1_STATIC": ["730"],
+        "TS2_STATIC": [],
+        "UA_MULTI_TS2": [{"TGID": "730", "TO": ""}],
+    }
+    assert peer_downlink_display_slots(peer, 730, 2) == [1, 2]
+
+
+def test_peer_downlink_display_slots_static_on_one_dynamic_single_on_other():
+    """SINGLE=1 exclusive session (SINGLE_TS2) on the slot opposite a static
+    match: both slots must light up."""
+    peer = {
+        "RF_MODE": "duplex",
+        "TS1_STATIC": ["730"],
+        "TS2_STATIC": [],
+        "SINGLE_TS2": {"TGID": "730", "TO": ""},
+    }
+    assert peer_downlink_display_slots(peer, 730, 2) == [1, 2]
+
+
+def test_peer_downlink_display_slots_static_on_one_no_dynamic_elsewhere():
+    """Plain single-static case (no dynamic activity on the other slot) must
+    stay single-slot -- this is the case a naive event_slot-mismatch heuristic
+    would wrongly treat as dual-slot."""
+    peer = {"RF_MODE": "duplex", "TS1_STATIC": ["730"], "TS2_STATIC": []}
+    assert peer_downlink_display_slots(peer, 730, 2) == [1]
+
+
+def test_peer_downlink_display_slots_dynamic_multi_on_both_no_static():
+    """No static OPTIONS match at all -- TG independently keyed (SINGLE=0)
+    dynamic on both slots -- must still light up both."""
+    peer = {
+        "RF_MODE": "duplex",
+        "TS1_STATIC": [],
+        "TS2_STATIC": [],
+        "UA_MULTI_TS1": [{"TGID": "730", "TO": ""}],
+        "UA_MULTI_TS2": [{"TGID": "730", "TO": ""}],
+    }
+    assert peer_downlink_display_slots(peer, 730, 2) == [1, 2]
+
+
+def test_peer_downlink_display_slots_dynamic_multi_on_one_no_static():
+    """Dynamic (SINGLE=0) on only one slot, no static anywhere -- must stay
+    single-slot, following the event."""
+    peer = {
+        "RF_MODE": "duplex",
+        "TS1_STATIC": [],
+        "TS2_STATIC": [],
+        "UA_MULTI_TS2": [{"TGID": "730", "TO": ""}],
+    }
+    assert peer_downlink_display_slots(peer, 730, 2) == [2]
+
+
+def test_peer_downlink_display_slots_simplex_ignores_dynamic_other_slot():
+    """Simplex hardware can't genuinely be on two slots at once -- the
+    dynamic-other-slot check must not apply."""
+    peer = {
+        "RF_MODE": "simplex",
+        "TS1_STATIC": ["730"],
+        "TS2_STATIC": [],
+        "UA_MULTI_TS2": [{"TGID": "730", "TO": ""}],
+    }
+    assert peer_downlink_display_slots(peer, 730, 1) == [2]

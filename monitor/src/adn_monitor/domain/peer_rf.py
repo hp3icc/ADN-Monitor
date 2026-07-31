@@ -105,6 +105,23 @@ def peer_downlink_display_slot(
     return event_slot
 
 
+def peer_dynamic_tg_active_on_slot(peer_row: dict[str, Any], destination: int, slot: int) -> bool:
+    """True when this TG is currently tracked as dynamic on ``slot`` --
+    SINGLE=1 exclusive session (``SINGLE_TS{slot}``) or SINGLE=0 keyed
+    multi-TG set (``UA_MULTI_TS{slot}``), both already synced onto peer_row
+    from the server's ua_sessions/ua_multi_tgs report fields."""
+    tg = str(destination)
+    single = peer_row.get(f"SINGLE_TS{slot}")
+    if isinstance(single, dict) and str(single.get("TGID") or "") == tg:
+        return True
+    multi = peer_row.get(f"UA_MULTI_TS{slot}")
+    if isinstance(multi, list):
+        for entry in multi:
+            if isinstance(entry, dict) and str(entry.get("TGID") or "") == tg:
+                return True
+    return False
+
+
 def peer_downlink_display_slots(
     peer_row: dict[str, Any],
     destination: int,
@@ -112,15 +129,21 @@ def peer_downlink_display_slots(
 ) -> list[int]:
     """CTABLE chip slot(s) to update for one downlink event to this peer.
 
-    Normally a single slot (see ``peer_downlink_display_slot``). When the TG
-    is duplicated on both static OPTIONS slots, adn-server's
-    ``iter_downlink_voice_slots`` delivers to this peer independently on
-    TS1 *and* TS2 from the one incoming event -- both chips must reflect
-    that, not just whichever slot the source happened to transmit on.
+    Normally a single slot (see ``peer_downlink_display_slot``). A duplex
+    peer genuinely subscribed to this TG on both slots at once -- static on
+    both, static on one and dynamically active (SINGLE=0/1) on the other, or
+    dynamically active on both -- must light up both chips, matching
+    adn-server's ``iter_downlink_voice_slots`` delivering independently to
+    each slot from the one incoming event. Static vs dynamic makes no
+    difference to any of this.
     """
+    if peer_is_simplex(peer_row):
+        return [peer_downlink_display_slot(peer_row, destination, event_slot)]
     tg = str(destination)
     ts1 = [str(x).strip() for x in (peer_row.get("TS1_STATIC") or []) if str(x).strip()]
     ts2 = [str(x).strip() for x in (peer_row.get("TS2_STATIC") or []) if str(x).strip()]
-    if tg in ts1 and tg in ts2:
+    active_on_1 = tg in ts1 or peer_dynamic_tg_active_on_slot(peer_row, destination, 1)
+    active_on_2 = tg in ts2 or peer_dynamic_tg_active_on_slot(peer_row, destination, 2)
+    if active_on_1 and active_on_2:
         return [1, 2]
     return [peer_downlink_display_slot(peer_row, destination, event_slot)]
