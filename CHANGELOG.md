@@ -4,6 +4,14 @@ All notable changes to **adn-monitor** (monitor + dashboard) are documented here
 
 <!-- version list -->
 
+## v2.5.3 (2026-07-31)
+
+### Bug Fixes
+
+- Light up a peer's own other-slot chip for dynamic TG activity too
+  ([`5bf16fe`](https://github.com/ce5rpy/ADN-Monitor/commit/5bf16fec982ecf28ab055fa6ee73763fa1099fa7))
+
+
 ## v2.5.2 (2026-07-28)
 
 ### Bug Fixes
